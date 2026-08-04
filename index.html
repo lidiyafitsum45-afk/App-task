@@ -19,7 +19,7 @@
     <div class="brand">Priority</div>
     <p class="auth-sub" id="auth-mode-sub">Sign in with your work email and password.</p>
 
-    <form id="auth-form">
+    <form id="auth-form" onsubmit="return false">
       <input id="auth-email" type="email" placeholder="you@company.com" required />
       <input id="auth-password" type="password" placeholder="Password" required minlength="6" />
       <button type="submit" id="auth-submit-btn">Sign in</button>
@@ -29,7 +29,7 @@
 
     <div id="name-step" class="hidden">
       <p class="auth-sub">What should teammates see you as?</p>
-      <form id="name-form">
+      <form id="name-form" onsubmit="return false">
         <input id="name-input" type="text" placeholder="Your name" required />
         <button type="submit">Continue</button>
       </form>
@@ -87,7 +87,7 @@
       <button id="modal-close" class="ghost-btn">✕</button>
     </div>
 
-    <form id="task-form">
+    <form id="task-form" onsubmit="return false">
       <label>Title
         <input id="f-title" type="text" required maxlength="140" />
       </label>
