@@ -1,4 +1,4 @@
-const CACHE = 'priority-v1';
+const CACHE = 'priority-v3';
 const SHELL = ['/', '/index.html', '/style.css', '/app.js', '/config.js', '/manifest.json'];
 
 self.addEventListener('install', (e) => {
@@ -15,8 +15,16 @@ self.addEventListener('activate', (e) => {
 
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
+  // Network-first: always try to get the latest version when online.
+  // Only fall back to the cached copy if the network is unreachable (offline).
   e.respondWith(
-    caches.match(e.request).then(cached => cached || fetch(e.request).catch(() => cached))
+    fetch(e.request)
+      .then(res => {
+        const copy = res.clone();
+        caches.open(CACHE).then(c => c.put(e.request, copy));
+        return res;
+      })
+      .catch(() => caches.match(e.request))
   );
 });
 
