@@ -17,11 +17,14 @@
 <div id="auth-screen" class="screen">
   <div class="auth-card">
     <div class="brand">Priority</div>
-    <p class="auth-sub">Sign in with your work email. We'll send a one-time link — no password.</p>
+    <p class="auth-sub" id="auth-mode-sub">Sign in with your work email and password.</p>
+
     <form id="auth-form">
       <input id="auth-email" type="email" placeholder="you@company.com" required />
-      <button type="submit">Send sign-in link</button>
+      <input id="auth-password" type="password" placeholder="Password" required minlength="6" />
+      <button type="submit" id="auth-submit-btn">Sign in</button>
     </form>
+    <button type="button" id="auth-toggle-mode" class="link-btn">Need an account? Create one</button>
     <p id="auth-status" class="auth-status"></p>
 
     <div id="name-step" class="hidden">

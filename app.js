@@ -77,13 +77,42 @@ async function loadTasks() {
 // ---------------------------------------------------------------
 // Static UI bindings
 // ---------------------------------------------------------------
+let authMode = 'signin'; // 'signin' | 'signup'
+
 function bindStaticEvents() {
+  $('#auth-toggle-mode').addEventListener('click', () => {
+    authMode = authMode === 'signin' ? 'signup' : 'signin';
+    $('#auth-submit-btn').textContent = authMode === 'signin' ? 'Sign in' : 'Create account';
+    $('#auth-mode-sub').textContent = authMode === 'signin'
+      ? 'Sign in with your work email and password.'
+      : 'Create your account with a work email and password.';
+    $('#auth-toggle-mode').textContent = authMode === 'signin'
+      ? 'Need an account? Create one'
+      : 'Already have an account? Sign in';
+    $('#auth-status').textContent = '';
+  });
+
   $('#auth-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const email = $('#auth-email').value.trim();
-    $('#auth-status').textContent = 'Sending...';
-    const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.href } });
-    $('#auth-status').textContent = error ? error.message : 'Check your email for the sign-in link.';
+    const password = $('#auth-password').value;
+
+    if (authMode === 'signup') {
+      $('#auth-status').textContent = 'Creating account...';
+      const { data, error } = await sb.auth.signUp({ email, password });
+      if (error) { $('#auth-status').textContent = error.message; return; }
+      if (data.session) {
+        $('#auth-status').textContent = '';
+        await handleSignedIn(data.user);
+      } else {
+        $('#auth-status').textContent = 'Account created. Check your email to confirm, then sign in.';
+      }
+      return;
+    }
+
+    $('#auth-status').textContent = 'Signing in...';
+    const { error } = await sb.auth.signInWithPassword({ email, password });
+    $('#auth-status').textContent = error ? error.message : '';
   });
 
   $('#signout-btn').addEventListener('click', () => sb.auth.signOut());

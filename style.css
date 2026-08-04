@@ -62,6 +62,8 @@ input, textarea, select { font-family: inherit; }
 .auth-sub { color: var(--ink-soft); font-size: 14px; margin: 14px 0 16px; line-height: 1.5; }
 #auth-form, #name-form { display: flex; gap: 8px; }
 .auth-status { font-size: 13px; color: var(--ink-soft); margin-top: 12px; min-height: 18px; }
+#auth-form { flex-direction: column; }
+.link-btn { background: none; border: none; color: var(--schedule-color); font-size: 13px; margin-top: 12px; padding: 0; text-decoration: underline; }
 #name-step { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--line); }
 
 input[type=email], input[type=text], input[type=datetime-local], textarea, select {
