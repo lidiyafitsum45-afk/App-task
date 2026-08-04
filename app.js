@@ -2,23 +2,27 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 let currentUser = null;
 let currentProfile = null;
-let profiles = [];       // all team members
-let tasks = [];          // all tasks (live)
-let filterMode = 'mine'; // 'mine' | 'all'
-let selectedImportant = null;
-let chainSteps = [];     // [{title, assigneeId, due}] — steps AFTER the base task
+let profiles = [];
+let tasks = [];
+let tags = [];
+let filterMode = 'mine';
 let editingTaskId = null;
+let selectedQuadrant = null;   // {important, urgent}
+let selectedTagIds = new Set();
+let attachmentRows = [];       // [{label, url}]
+let subtaskRows = [];          // [{title, assigneeId, due}] — only used at creation time
+let chainSteps = [];
+let progressRange = { days: 7, from: null, to: null };
 
 const DO_FIRST_CAP = 5;
-const URGENT_WINDOW_MS = 48 * 60 * 60 * 1000;
+const CARD_LIST_CAP = 5;
 
 const $ = (sel) => document.querySelector(sel);
 const $all = (sel) => Array.from(document.querySelectorAll(sel));
 
 // ---------------------------------------------------------------
-// Boot — event bindings happen first and unconditionally, so a
-// later error (e.g. auth/session check failing) can never leave
-// the sign-in form without its submit handler attached.
+// Boot — bind events first, unconditionally, so a later error can
+// never leave a form without its handlers attached.
 // ---------------------------------------------------------------
 bindStaticEvents();
 
@@ -26,7 +30,6 @@ bindStaticEvents();
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('service-worker.js').catch(() => {});
   }
-
   try {
     const { data: { session } } = await sb.auth.getSession();
     if (session) await handleSignedIn(session.user);
@@ -34,7 +37,6 @@ bindStaticEvents();
     console.error('Session check failed:', err);
     $('#auth-status').textContent = 'Could not reach the server. Check your connection and try again.';
   }
-
   sb.auth.onAuthStateChange((event, session) => {
     if (event === 'SIGNED_IN' && session) handleSignedIn(session.user);
     if (event === 'SIGNED_OUT') location.reload();
@@ -69,10 +71,19 @@ async function enterApp() {
   profiles = allProfiles || [];
   populateAssigneeSelect();
 
+  const { data: allTags } = await sb.from('tags').select('*').order('name');
+  tags = allTags || [];
+
   await loadTasks();
 
   sb.channel('tasks-realtime')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, () => loadTasks())
+    .subscribe();
+  sb.channel('tags-realtime')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'tags' }, async () => {
+      const { data } = await sb.from('tags').select('*').order('name');
+      tags = data || [];
+    })
     .subscribe();
 }
 
@@ -86,7 +97,7 @@ async function loadTasks() {
 // ---------------------------------------------------------------
 // Static UI bindings
 // ---------------------------------------------------------------
-let authMode = 'signin'; // 'signin' | 'signup'
+let authMode = 'signin';
 
 function bindStaticEvents() {
   $('#auth-toggle-mode').addEventListener('click', () => {
@@ -110,12 +121,8 @@ function bindStaticEvents() {
       $('#auth-status').textContent = 'Creating account...';
       const { data, error } = await sb.auth.signUp({ email, password });
       if (error) { $('#auth-status').textContent = error.message; return; }
-      if (data.session) {
-        $('#auth-status').textContent = '';
-        await handleSignedIn(data.user);
-      } else {
-        $('#auth-status').textContent = 'Account created. Check your email to confirm, then sign in.';
-      }
+      if (data.session) { $('#auth-status').textContent = ''; await handleSignedIn(data.user); }
+      else { $('#auth-status').textContent = 'Account created. Check your email to confirm, then sign in.'; }
       return;
     }
 
@@ -135,11 +142,31 @@ function bindStaticEvents() {
   $('#new-task-btn').addEventListener('click', () => openTaskModal(null));
   $('#modal-close').addEventListener('click', closeTaskModal);
   $('#detail-close').addEventListener('click', () => $('#detail-modal').classList.add('hidden'));
+  $('#quadrant-modal-close').addEventListener('click', () => $('#quadrant-modal').classList.add('hidden'));
+  $('#done-modal-close').addEventListener('click', () => $('#done-modal').classList.add('hidden'));
+  $('#progress-modal-close').addEventListener('click', () => $('#progress-modal').classList.add('hidden'));
+  $('#howto-modal-close').addEventListener('click', () => $('#howto-modal').classList.add('hidden'));
+  $('#howto-btn').addEventListener('click', () => $('#howto-modal').classList.remove('hidden'));
+  $('#done-toggle-btn').addEventListener('click', openDoneModal);
+  $('#progress-btn').addEventListener('click', openProgressModal);
 
-  $all('.seg-btn').forEach(btn => btn.addEventListener('click', () => {
-    selectedImportant = btn.dataset.important === 'true';
-    $all('.seg-btn').forEach(b => b.classList.toggle('selected', b === btn));
+  // Quadrant picker chips
+  $all('.qchip').forEach(chip => chip.addEventListener('click', () => {
+    selectedQuadrant = { important: chip.dataset.important === 'true', urgent: chip.dataset.urgent === 'true' };
+    $all('.qchip').forEach(c => c.classList.toggle('selected', c === chip));
   }));
+
+  // Collapsible sections
+  $all('.collapse-toggle').forEach(btn => btn.addEventListener('click', () => {
+    const body = $('#' + btn.dataset.target);
+    const open = body.classList.contains('hidden');
+    body.classList.toggle('hidden', !open);
+    btn.classList.toggle('open', open);
+  }));
+
+  $('#add-tag-btn').addEventListener('click', addTagInline);
+  $('#add-attachment-btn').addEventListener('click', () => { attachmentRows.push({ label: '', url: '' }); renderAttachmentRows(); });
+  $('#add-subtask-btn').addEventListener('click', () => { subtaskRows.push({ title: '', assigneeId: '', due: '' }); renderSubtaskRows(); });
 
   $('#f-chain-enable').addEventListener('change', (e) => {
     $('#chain-builder').classList.toggle('hidden', !e.target.checked);
@@ -151,32 +178,68 @@ function bindStaticEvents() {
 
   $('#task-form').addEventListener('submit', submitTaskForm);
   $('#task-delete-btn').addEventListener('click', deleteEditingTask);
-
   $('#notif-btn').addEventListener('click', enablePushNotifications);
+
+  // Progress range filter
+  $all('.range-btn').forEach(btn => btn.addEventListener('click', () => {
+    $all('.range-btn').forEach(b => b.classList.toggle('active', b === btn));
+    $('#custom-range-inputs').classList.toggle('hidden', btn.dataset.range !== 'custom');
+    if (btn.dataset.range === 'custom') return;
+    progressRange = btn.dataset.range === 'all' ? { days: 'all' } : { days: +btn.dataset.range };
+    renderProgress();
+  }));
+  $('#apply-custom-range').addEventListener('click', () => {
+    const from = $('#range-from').value, to = $('#range-to').value;
+    if (!from || !to) return;
+    progressRange = { from: new Date(from), to: new Date(to + 'T23:59:59') };
+    renderProgress();
+  });
+
+  // Quadrant drop zones (desktop drag-and-drop)
+  $all('.card-list').forEach(list => {
+    list.addEventListener('dragover', (e) => { e.preventDefault(); list.classList.add('drag-over'); });
+    list.addEventListener('dragleave', () => list.classList.remove('drag-over'));
+    list.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      list.classList.remove('drag-over');
+      const taskId = e.dataTransfer.getData('text/plain');
+      const quadrantSection = list.closest('.quadrant');
+      if (!taskId || !quadrantSection) return;
+      const { important, urgent } = quadrantFields(quadrantSection.dataset.q);
+      await sb.from('tasks').update({ important, urgent }).eq('id', taskId);
+    });
+  });
+
+  $all('.view-all-btn').forEach(btn => btn.addEventListener('click', () => openQuadrantModal(btn.dataset.q)));
 }
 
+function quadrantFields(key) {
+  return {
+    do: { important: true, urgent: true },
+    schedule: { important: true, urgent: false },
+    delegate: { important: false, urgent: true },
+    eliminate: { important: false, urgent: false },
+  }[key];
+}
+const QUADRANT_LABELS = { do: 'Do First', schedule: 'Schedule', delegate: 'Delegate', eliminate: 'Eliminate' };
+
 function populateAssigneeSelect() {
-  const sel = $('#f-assignee');
-  sel.innerHTML = profiles.map(p => `<option value="${p.id}">${escapeHtml(p.name)}${p.id === currentUser.id ? ' (you)' : ''}</option>`).join('');
+  const html = profiles.map(p => `<option value="${p.id}">${escapeHtml(p.name)}${p.id === currentUser.id ? ' (you)' : ''}</option>`).join('');
+  $('#f-assignee').innerHTML = html;
 }
 
 // ---------------------------------------------------------------
 // Derived task properties
 // ---------------------------------------------------------------
-function isUrgent(t) {
-  if (t.status === 'done' || !t.due_date) return false;
-  return (new Date(t.due_date).getTime() - Date.now()) <= URGENT_WINDOW_MS;
-}
 function quadrantOf(t) {
-  const u = isUrgent(t), i = t.important;
-  if (u && i) return 'do';
-  if (!u && i) return 'schedule';
-  if (u && !i) return 'delegate';
+  if (t.important && t.urgent) return 'do';
+  if (t.important && !t.urgent) return 'schedule';
+  if (!t.important && t.urgent) return 'delegate';
   return 'eliminate';
 }
 function isVisible(t) {
-  // Chain tasks that haven't activated yet stay hidden from the dashboard.
   if (t.chain_id && t.chain_status === 'queued') return false;
+  if (t.parent_task_id) return false; // subtasks only show inside their parent
   return true;
 }
 function profileName(id) {
@@ -189,49 +252,77 @@ function chainLabel(t) {
   const pos = siblings.findIndex(x => x.id === t.id) + 1;
   return `${pos} of ${siblings.length}`;
 }
+function tagIcon(id) {
+  const t = tags.find(x => x.id === id);
+  return t ? t.icon : '';
+}
+function subtasksOf(id) { return tasks.filter(x => x.parent_task_id === id); }
 
 // ---------------------------------------------------------------
-// Render
+// Render — main dashboard
 // ---------------------------------------------------------------
 function render() {
-  const visible = tasks.filter(isVisible).filter(t => filterMode === 'mine' ? t.assignee_id === currentUser.id : true);
+  const scoped = tasks.filter(isVisible).filter(t => t.status !== 'done')
+    .filter(t => filterMode === 'mine' ? t.assignee_id === currentUser.id : true);
   const quads = { do: [], schedule: [], delegate: [], eliminate: [] };
-  visible.forEach(t => quads[quadrantOf(t)].push(t));
+  scoped.forEach(t => quads[quadrantOf(t)].push(t));
 
   Object.entries(quads).forEach(([key, list]) => {
     const el = $('#list-' + key);
-    if (!list.length) { el.innerHTML = `<div class="empty-hint">Nothing here.</div>`; return; }
-    el.innerHTML = list.map(taskCardHtml).join('');
+    const shown = list.slice(0, CARD_LIST_CAP);
+    el.innerHTML = shown.length ? shown.map(taskCardHtml).join('') : `<div class="empty-hint">Nothing here.</div>`;
+    const viewAllBtn = document.querySelector(`.view-all-btn[data-q="${key}"]`);
+    if (list.length > CARD_LIST_CAP) {
+      viewAllBtn.classList.remove('hidden');
+      viewAllBtn.querySelector('span').textContent = list.length;
+    } else {
+      viewAllBtn.classList.add('hidden');
+    }
   });
 
+  bindCardInteractions();
+
+  const mineDoFirst = tasks.filter(isVisible).filter(t => t.assignee_id === currentUser.id && t.status !== 'done' && quadrantOf(t) === 'do');
+  const capEl = $('#cap-warning');
+  if (mineDoFirst.length >= DO_FIRST_CAP) {
+    capEl.classList.remove('hidden');
+    capEl.textContent = `${mineDoFirst.length} in Do First — consider re-triaging one.`;
+  } else {
+    capEl.classList.add('hidden');
+  }
+
+  const doneScoped = tasks.filter(isVisible).filter(t => t.status === 'done')
+    .filter(t => filterMode === 'mine' ? t.assignee_id === currentUser.id : true);
+  $('#done-count').textContent = doneScoped.length;
+}
+
+function bindCardInteractions() {
   $all('.task-card').forEach(card => {
     card.addEventListener('click', (e) => {
       if (e.target.closest('.task-check')) return;
       openDetail(card.dataset.id);
     });
+    card.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/plain', card.dataset.id);
+      card.classList.add('card-dragging');
+    });
+    card.addEventListener('dragend', () => card.classList.remove('card-dragging'));
   });
   $all('.task-check').forEach(chk => {
-    chk.addEventListener('click', (e) => {
-      e.stopPropagation();
-      toggleDone(chk.dataset.id);
-    });
+    chk.addEventListener('click', (e) => { e.stopPropagation(); toggleDone(chk.dataset.id); });
   });
-
-  // Do First soft cap — checked against the current user's own active load
-  const mineDoFirst = tasks.filter(isVisible).filter(t => t.assignee_id === currentUser.id && t.status !== 'done' && quadrantOf(t) === 'do');
-  const capEl = $('#cap-warning');
-  if (mineDoFirst.length >= DO_FIRST_CAP) {
-    capEl.classList.remove('hidden');
-    capEl.textContent = `You have ${mineDoFirst.length} tasks in Do First — consider clearing or re-triaging one before adding more.`;
-  } else {
-    capEl.classList.add('hidden');
-  }
 }
 
 function taskCardHtml(t) {
   const due = t.due_date ? new Date(t.due_date).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : null;
+  const tagChips = (t.tag_ids || []).map(id => `<span class="meta-chip"><span class="tag-chip-icon">${tagIcon(id)}</span></span>`).join('');
+  const notesChip = t.notes ? `<span class="meta-chip">📝</span>` : '';
+  const attachCount = (t.attachments || []).length;
+  const attachChip = attachCount ? `<span class="meta-chip">📎 ${attachCount}</span>` : '';
+  const subs = subtasksOf(t.id);
+  const subChip = subs.length ? `<span class="meta-chip">✅ ${subs.filter(s => s.status === 'done').length}/${subs.length}</span>` : '';
   return `
-    <div class="task-card ${t.status === 'done' ? 'done' : ''}" data-id="${t.id}">
+    <div class="task-card ${t.status === 'done' ? 'done' : ''}" data-id="${t.id}" draggable="true">
       <div class="task-card-top">
         <div class="task-check ${t.status === 'done' ? 'checked' : ''}" data-id="${t.id}">${t.status === 'done' ? '✓' : ''}</div>
         <div class="task-title">${escapeHtml(t.title)}</div>
@@ -240,18 +331,124 @@ function taskCardHtml(t) {
         <span>${escapeHtml(profileName(t.assignee_id))}</span>
         ${due ? `<span>${due}</span>` : ''}
         ${t.chain_id ? `<span class="chain-pill">${chainLabel(t)}</span>` : ''}
+        ${tagChips}${notesChip}${attachChip}${subChip}
       </div>
     </div>`;
 }
 
-// ---------------------------------------------------------------
-// Toggle done (also drives chain advancement, via DB trigger)
-// ---------------------------------------------------------------
 async function toggleDone(id) {
   const t = tasks.find(x => x.id === id);
   const newStatus = t.status === 'done' ? 'todo' : 'done';
   const { error } = await sb.from('tasks').update({ status: newStatus }).eq('id', id);
   if (error) alert('Could not update task: ' + error.message);
+}
+
+// ---------------------------------------------------------------
+// Quadrant "view all" modal
+// ---------------------------------------------------------------
+function openQuadrantModal(key) {
+  const scoped = tasks.filter(isVisible).filter(t => t.status !== 'done')
+    .filter(t => filterMode === 'mine' ? t.assignee_id === currentUser.id : true)
+    .filter(t => quadrantOf(t) === key);
+  $('#quadrant-modal-title').textContent = QUADRANT_LABELS[key];
+  $('#quadrant-modal-body').innerHTML = scoped.length ? scoped.map(taskCardHtml).join('') : `<div class="empty-hint">Nothing here.</div>`;
+  $all('#quadrant-modal-body .task-card').forEach(card => {
+    card.removeAttribute('draggable');
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('.task-check')) return;
+      $('#quadrant-modal').classList.add('hidden');
+      openDetail(card.dataset.id);
+    });
+  });
+  $all('#quadrant-modal-body .task-check').forEach(chk => {
+    chk.addEventListener('click', async (e) => { e.stopPropagation(); await toggleDone(chk.dataset.id); openQuadrantModal(key); });
+  });
+  $('#quadrant-modal').classList.remove('hidden');
+}
+
+// ---------------------------------------------------------------
+// Done tasks modal
+// ---------------------------------------------------------------
+function openDoneModal() {
+  const scoped = tasks.filter(isVisible).filter(t => t.status === 'done')
+    .filter(t => filterMode === 'mine' ? t.assignee_id === currentUser.id : true)
+    .sort((a, b) => new Date(b.completed_at || b.updated_at) - new Date(a.completed_at || a.updated_at));
+  $('#done-modal-body').innerHTML = scoped.length ? scoped.map(taskCardHtml).join('') : `<div class="empty-hint">No completed tasks yet.</div>`;
+  $all('#done-modal-body .task-card').forEach(card => card.removeAttribute('draggable'));
+  $all('#done-modal-body .task-check').forEach(chk => {
+    chk.addEventListener('click', async (e) => { e.stopPropagation(); await toggleDone(chk.dataset.id); openDoneModal(); });
+  });
+  $('#done-modal').classList.remove('hidden');
+}
+
+// ---------------------------------------------------------------
+// Tags
+// ---------------------------------------------------------------
+function renderTagPicker() {
+  $('#tag-picker').innerHTML = tags.map(t => `
+    <button type="button" class="tag-pill ${selectedTagIds.has(t.id) ? 'selected' : ''}" data-id="${t.id}">
+      <span>${t.icon}</span><span>${escapeHtml(t.name)}</span>
+    </button>`).join('');
+  $all('#tag-picker .tag-pill').forEach(btn => btn.addEventListener('click', () => {
+    const id = btn.dataset.id;
+    selectedTagIds.has(id) ? selectedTagIds.delete(id) : selectedTagIds.add(id);
+    renderTagPicker();
+  }));
+}
+
+async function addTagInline() {
+  const icon = $('#new-tag-icon').value.trim() || '🏷️';
+  const name = $('#new-tag-name').value.trim();
+  if (!name) return;
+  const { data, error } = await sb.from('tags').insert({ name, icon, created_by: currentProfile.id }).select().single();
+  if (error) { alert('Could not add tag: ' + error.message); return; }
+  tags.push(data);
+  selectedTagIds.add(data.id);
+  $('#new-tag-icon').value = '';
+  $('#new-tag-name').value = '';
+  renderTagPicker();
+}
+
+// ---------------------------------------------------------------
+// Attachments (create/edit form)
+// ---------------------------------------------------------------
+function renderAttachmentRows() {
+  const el = $('#attachment-rows');
+  el.innerHTML = attachmentRows.map((a, i) => `
+    <div class="attachment-row">
+      <input type="text" placeholder="Label" value="${escapeHtml(a.label)}" data-field="label" data-idx="${i}" />
+      <input type="text" placeholder="https://…" value="${escapeHtml(a.url)}" data-field="url" data-idx="${i}" />
+      <button type="button" class="row-remove-btn" data-idx="${i}">✕</button>
+    </div>`).join('');
+  el.querySelectorAll('input').forEach(inp => inp.addEventListener('input', (e) => {
+    attachmentRows[+e.target.dataset.idx][e.target.dataset.field] = e.target.value;
+  }));
+  el.querySelectorAll('.row-remove-btn').forEach(btn => btn.addEventListener('click', () => {
+    attachmentRows.splice(+btn.dataset.idx, 1); renderAttachmentRows();
+  }));
+}
+
+// ---------------------------------------------------------------
+// Subtasks (create form only — existing tasks add via detail view)
+// ---------------------------------------------------------------
+function renderSubtaskRows() {
+  const el = $('#subtask-rows');
+  el.innerHTML = subtaskRows.map((s, i) => `
+    <div class="subtask-row">
+      <input type="text" placeholder="Subtask title" value="${escapeHtml(s.title)}" data-field="title" data-idx="${i}" />
+      <select data-field="assigneeId" data-idx="${i}">
+        <option value="">Assignee…</option>
+        ${profiles.map(p => `<option value="${p.id}" ${p.id === s.assigneeId ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}
+      </select>
+      <input type="datetime-local" data-field="due" data-idx="${i}" value="${s.due || ''}" />
+      <button type="button" class="row-remove-btn" data-idx="${i}">✕</button>
+    </div>`).join('');
+  el.querySelectorAll('input, select').forEach(inp => inp.addEventListener('input', (e) => {
+    subtaskRows[+e.target.dataset.idx][e.target.dataset.field] = e.target.value;
+  }));
+  el.querySelectorAll('.row-remove-btn').forEach(btn => btn.addEventListener('click', () => {
+    subtaskRows.splice(+btn.dataset.idx, 1); renderSubtaskRows();
+  }));
 }
 
 // ---------------------------------------------------------------
@@ -264,20 +461,36 @@ function openTaskModal(taskId) {
   $('#modal-title').textContent = t ? 'Edit task' : 'New task';
   $('#task-delete-btn').classList.toggle('hidden', !t);
   $('#f-title').value = t ? t.title : '';
-  $('#f-desc').value = t ? (t.description || '') : '';
+  $('#f-notes').value = t ? (t.notes || '') : '';
   $('#f-assignee').value = t ? t.assignee_id : currentUser.id;
   $('#f-due').value = t && t.due_date ? toLocalInputValue(t.due_date) : '';
 
-  selectedImportant = t ? t.important : null;
-  $all('.seg-btn').forEach(b => b.classList.toggle('selected', t && (b.dataset.important === String(t.important))));
+  selectedQuadrant = t ? { important: t.important, urgent: t.urgent } : null;
+  $all('.qchip').forEach(c => c.classList.toggle('selected',
+    !!t && c.dataset.important === String(t.important) && c.dataset.urgent === String(t.urgent)));
 
-  // Chains can only be created on a brand-new task, to keep ordering unambiguous.
-  const chainToggleRow = $('.chain-block');
-  chainToggleRow.classList.toggle('hidden', !!t);
+  selectedTagIds = new Set(t ? (t.tag_ids || []) : []);
+  renderTagPicker();
+
+  attachmentRows = t ? JSON.parse(JSON.stringify(t.attachments || [])) : [];
+  renderAttachmentRows();
+
+  subtaskRows = [];
+  renderSubtaskRows();
+  // Subtasks can only be added at creation via this form; hide the section on edit
+  // (existing tasks add subtasks from the detail view instead).
+  $('#sec-subtasks').closest('.collapse-section').classList.toggle('hidden', !!t);
+
+  const chainSection = $('#sec-chain').closest('.collapse-section');
+  chainSection.classList.toggle('hidden', !!t);
   $('#f-chain-enable').checked = false;
   $('#chain-builder').classList.add('hidden');
   chainSteps = [];
   renderChainSteps();
+
+  // Collapse all sections closed by default
+  $all('.collapse-body').forEach(b => b.classList.add('hidden'));
+  $all('.collapse-toggle').forEach(b => b.classList.remove('open'));
 
   $('#task-modal').classList.remove('hidden');
 }
@@ -297,15 +510,12 @@ function renderChainSteps() {
       <button type="button" class="remove-step" data-idx="${i}">✕</button>
     </div>`).join('');
 
-  el.querySelectorAll('input, select').forEach(inp => {
-    inp.addEventListener('input', (e) => {
-      const idx = +e.target.dataset.idx, field = e.target.dataset.field;
-      chainSteps[idx][field] = e.target.value;
-    });
-  });
-  el.querySelectorAll('.remove-step').forEach(btn => {
-    btn.addEventListener('click', () => { chainSteps.splice(+btn.dataset.idx, 1); renderChainSteps(); });
-  });
+  el.querySelectorAll('input, select').forEach(inp => inp.addEventListener('input', (e) => {
+    chainSteps[+e.target.dataset.idx][e.target.dataset.field] = e.target.value;
+  }));
+  el.querySelectorAll('.remove-step').forEach(btn => btn.addEventListener('click', () => {
+    chainSteps.splice(+btn.dataset.idx, 1); renderChainSteps();
+  }));
 
   let dragIdx = null;
   el.querySelectorAll('.chain-step').forEach(row => {
@@ -324,13 +534,19 @@ function renderChainSteps() {
 async function submitTaskForm(e) {
   e.preventDefault();
   const title = $('#f-title').value.trim();
-  const description = $('#f-desc').value.trim();
+  const notes = $('#f-notes').value.trim();
   const assignee_id = $('#f-assignee').value;
   const due_date = $('#f-due').value ? new Date($('#f-due').value).toISOString() : null;
-  const important = selectedImportant === null ? false : selectedImportant;
+  const quad = selectedQuadrant || { important: false, urgent: false };
+  const tag_ids = Array.from(selectedTagIds);
+  const attachments = attachmentRows.filter(a => a.label.trim() && a.url.trim());
 
   if (editingTaskId) {
-    const { error } = await sb.from('tasks').update({ title, description, assignee_id, due_date, important }).eq('id', editingTaskId);
+    const { error } = await sb.from('tasks').update({
+      title, notes, assignee_id, due_date,
+      important: quad.important, urgent: quad.urgent,
+      tag_ids, attachments,
+    }).eq('id', editingTaskId);
     if (error) { alert('Could not update task: ' + error.message); return; }
     closeTaskModal();
     return;
@@ -340,7 +556,9 @@ async function submitTaskForm(e) {
   const chain_id = useChain ? crypto.randomUUID() : null;
 
   const base = {
-    title, description, assignee_id, due_date, important,
+    title, notes, assignee_id, due_date,
+    important: quad.important, urgent: quad.urgent,
+    tag_ids, attachments,
     created_by: currentProfile.id,
     chain_id, chain_order: useChain ? 0 : null, chain_status: useChain ? 'active' : null,
   };
@@ -348,22 +566,28 @@ async function submitTaskForm(e) {
   if (baseErr) { alert('Could not save task: ' + baseErr.message); return; }
 
   if (useChain) {
-    const rows = chainSteps
-      .filter(s => s.title.trim())
-      .map((s, i) => ({
-        title: s.title.trim(),
-        assignee_id: s.assigneeId || null,
-        due_date: s.due ? new Date(s.due).toISOString() : null,
-        important,
-        created_by: currentProfile.id,
-        chain_id,
-        chain_order: i + 1,
-        chain_status: 'queued',
-      }));
+    const rows = chainSteps.filter(s => s.title.trim()).map((s, i) => ({
+      title: s.title.trim(), assignee_id: s.assigneeId || null,
+      due_date: s.due ? new Date(s.due).toISOString() : null,
+      important: quad.important, urgent: quad.urgent,
+      created_by: currentProfile.id, chain_id, chain_order: i + 1, chain_status: 'queued',
+    }));
     if (rows.length) {
       const { error: chainErr } = await sb.from('tasks').insert(rows);
       if (chainErr) alert('Task saved, but chain steps failed: ' + chainErr.message);
     }
+  }
+
+  const validSubtasks = subtaskRows.filter(s => s.title.trim());
+  if (validSubtasks.length) {
+    const rows = validSubtasks.map(s => ({
+      title: s.title.trim(), assignee_id: s.assigneeId || null,
+      due_date: s.due ? new Date(s.due).toISOString() : null,
+      important: false, urgent: false,
+      created_by: currentProfile.id, parent_task_id: baseTask.id,
+    }));
+    const { error: subErr } = await sb.from('tasks').insert(rows);
+    if (subErr) alert('Task saved, but subtasks failed: ' + subErr.message);
   }
 
   closeTaskModal();
@@ -376,7 +600,7 @@ async function deleteEditingTask() {
 }
 
 // ---------------------------------------------------------------
-// Detail modal (includes chain reorder for queued siblings)
+// Detail modal
 // ---------------------------------------------------------------
 function openDetail(id) {
   const t = tasks.find(x => x.id === id);
@@ -394,12 +618,42 @@ function openDetail(id) {
       </div>`).join('')}</div>`;
   }
 
+  const tagHtml = (t.tag_ids || []).length
+    ? `<div class="d-row"><div class="d-label">TAGS</div>${(t.tag_ids || []).map(id => {
+        const tg = tags.find(x => x.id === id); return tg ? `<span class="meta-chip">${tg.icon} ${escapeHtml(tg.name)}</span> ` : '';
+      }).join('')}</div>` : '';
+
+  const attachHtml = (t.attachments || []).length
+    ? `<div class="d-row"><div class="d-label">ATTACHMENTS</div>${(t.attachments || [])
+        .map(a => `<div>📎 <a href="${escapeHtml(a.url)}" target="_blank" rel="noopener">${escapeHtml(a.label)}</a></div>`).join('')}</div>` : '';
+
+  const subs = subtasksOf(t.id);
+  const subtaskHtml = `<div class="d-row"><div class="d-label">SUBTASKS</div>
+    ${subs.map(s => `
+      <div class="subtask-checklist-item">
+        <div class="task-check ${s.status === 'done' ? 'checked' : ''}" data-sub-id="${s.id}">${s.status === 'done' ? '✓' : ''}</div>
+        <span>${escapeHtml(s.title)}</span>
+        <span class="subtask-meta">${escapeHtml(profileName(s.assignee_id))}${s.due_date ? ' · ' + new Date(s.due_date).toLocaleDateString() : ''}</span>
+      </div>`).join('')}
+    <div class="subtask-row" id="inline-add-subtask">
+      <input type="text" placeholder="New subtask…" id="inline-sub-title" />
+      <select id="inline-sub-assignee">${profiles.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('')}</select>
+      <input type="datetime-local" id="inline-sub-due" />
+      <button type="button" class="row-remove-btn" id="inline-sub-add" title="Add">+</button>
+    </div>
+  </div>`;
+
+  const moveButtons = Object.keys(QUADRANT_LABELS).map(key =>
+    `<button type="button" class="move-to-btn" data-move="${key}">${QUADRANT_LABELS[key]}</button>`).join('');
+
   $('#detail-body').innerHTML = `
     <div class="d-row"><div class="d-label">ASSIGNEE</div>${escapeHtml(profileName(t.assignee_id))}</div>
-    ${t.description ? `<div class="d-row"><div class="d-label">DESCRIPTION</div>${escapeHtml(t.description)}</div>` : ''}
+    ${t.notes ? `<div class="d-row"><div class="d-label">NOTES</div>${escapeHtml(t.notes)}</div>` : ''}
     ${t.due_date ? `<div class="d-row"><div class="d-label">DUE</div>${new Date(t.due_date).toLocaleString()}</div>` : ''}
     <div class="d-row"><div class="d-label">STATUS</div>${t.status}</div>
-    ${chainHtml}
+    ${tagHtml}${attachHtml}${chainHtml}
+    ${!t.parent_task_id ? subtaskHtml : ''}
+    <div class="d-row"><div class="d-label">MOVE TO</div><div class="move-to-row">${moveButtons}</div></div>
     <div class="modal-actions">
       <button type="button" class="ghost-btn" id="detail-edit-btn">Edit</button>
       <button type="button" class="primary-btn" id="detail-toggle-btn">${t.status === 'done' ? 'Mark not done' : 'Mark done'}</button>
@@ -408,7 +662,32 @@ function openDetail(id) {
   $('#detail-edit-btn').addEventListener('click', () => { $('#detail-modal').classList.add('hidden'); openTaskModal(t.id); });
   $('#detail-toggle-btn').addEventListener('click', async () => { await toggleDone(t.id); $('#detail-modal').classList.add('hidden'); });
 
-  // Drag reorder for queued chain siblings
+  $all('.move-to-btn').forEach(btn => btn.addEventListener('click', async () => {
+    const { important, urgent } = quadrantFields(btn.dataset.move);
+    await sb.from('tasks').update({ important, urgent }).eq('id', t.id);
+    $('#detail-modal').classList.add('hidden');
+  }));
+
+  $all('[data-sub-id]').forEach(chk => chk.addEventListener('click', async () => {
+    const sub = tasks.find(x => x.id === chk.dataset.subId);
+    await sb.from('tasks').update({ status: sub.status === 'done' ? 'todo' : 'done' }).eq('id', sub.id);
+    openDetail(id);
+  }));
+
+  const addBtn = $('#inline-sub-add');
+  if (addBtn) addBtn.addEventListener('click', async () => {
+    const title = $('#inline-sub-title').value.trim();
+    if (!title) return;
+    const assignee_id = $('#inline-sub-assignee').value;
+    const dueVal = $('#inline-sub-due').value;
+    const { error } = await sb.from('tasks').insert({
+      title, assignee_id, due_date: dueVal ? new Date(dueVal).toISOString() : null,
+      important: false, urgent: false, created_by: currentProfile.id, parent_task_id: t.id,
+    });
+    if (error) { alert('Could not add subtask: ' + error.message); return; }
+    openDetail(id);
+  });
+
   let dragId = null;
   $all('.chain-list-item[draggable=true]').forEach(row => {
     row.addEventListener('dragstart', () => dragId = row.dataset.id);
@@ -432,6 +711,100 @@ function openDetail(id) {
 }
 
 // ---------------------------------------------------------------
+// My progress — heatmap + quadrant completion donuts
+// ---------------------------------------------------------------
+function openProgressModal() {
+  progressRange = { days: 7 };
+  $all('.range-btn').forEach(b => b.classList.toggle('active', b.dataset.range === '7'));
+  $('#custom-range-inputs').classList.add('hidden');
+  renderProgress();
+  $('#progress-modal').classList.remove('hidden');
+}
+
+function rangeToDates() {
+  const to = new Date();
+  if (progressRange.from) return { from: progressRange.from, to: progressRange.to };
+  if (progressRange.days === 'all') {
+    const earliest = tasks.reduce((min, t) => {
+      const d = new Date(t.created_at);
+      return d < min ? d : min;
+    }, new Date());
+    return { from: earliest, to };
+  }
+  const from = new Date();
+  from.setDate(from.getDate() - progressRange.days);
+  return { from, to };
+}
+
+function renderProgress() {
+  const { from, to } = rangeToDates();
+  renderHeatmap(from, to);
+  renderDonuts(from, to);
+}
+
+function renderHeatmap(from, to) {
+  const dayCounts = {};
+  tasks.filter(t => t.assignee_id === currentUser.id && t.completed_at).forEach(t => {
+    const d = new Date(t.completed_at);
+    if (d < from || d > to) return;
+    const key = d.toISOString().slice(0, 10);
+    dayCounts[key] = (dayCounts[key] || 0) + 1;
+  });
+
+  // Align to the Sunday on/before `from`, so weeks form clean columns.
+  const start = new Date(from);
+  start.setDate(start.getDate() - start.getDay());
+  const days = [];
+  for (let d = new Date(start); d <= to; d.setDate(d.getDate() + 1)) days.push(new Date(d));
+
+  const max = Math.max(1, ...Object.values(dayCounts));
+  const bucket = (n) => n === 0 ? 0 : Math.min(4, Math.ceil((n / max) * 4));
+  const shades = ['var(--line)', '#D9C9BE', '#C79A7E', '#B3432B', '#7A2D1C'];
+
+  const cells = days.map(d => {
+    const key = d.toISOString().slice(0, 10);
+    const n = dayCounts[key] || 0;
+    const inRange = d >= from && d <= to;
+    const color = inRange ? shades[bucket(n)] : 'transparent';
+    return `<div class="heatmap-cell" title="${key}: ${n} completed" style="background:${color}"></div>`;
+  }).join('');
+
+  $('#heatmap-wrap').innerHTML = `
+    <div class="heatmap-grid">${cells}</div>
+    <div class="heatmap-legend">Less ${shades.map(s => `<span class="heatmap-cell" style="background:${s}"></span>`).join('')} More</div>`;
+}
+
+function renderDonuts(from, to) {
+  const mine = tasks.filter(t => t.assignee_id === currentUser.id && !t.parent_task_id
+    && new Date(t.created_at) >= from && new Date(t.created_at) <= to);
+  const buckets = { do: [], schedule: [], delegate: [], eliminate: [] };
+  mine.forEach(t => buckets[quadrantOf(t)].push(t));
+
+  $('#donut-grid').innerHTML = Object.entries(buckets).map(([key, list]) => {
+    const done = list.filter(t => t.status === 'done').length;
+    const pct = list.length ? Math.round((done / list.length) * 100) : 0;
+    return `<div class="donut-card">${donutSvg(pct, quadrantAccent(key))}
+      <div class="donut-pct">${pct}%</div>
+      <div class="donut-label">${QUADRANT_LABELS[key]} (${done}/${list.length})</div></div>`;
+  }).join('');
+}
+
+function quadrantAccent(key) {
+  return { do: '#B3432B', schedule: '#2B5F8A', delegate: '#A6791F', eliminate: '#6B6660' }[key];
+}
+
+function donutSvg(pct, color) {
+  const r = 34, c = 2 * Math.PI * r;
+  const offset = c - (pct / 100) * c;
+  return `<svg width="90" height="90" viewBox="0 0 90 90">
+    <circle cx="45" cy="45" r="${r}" fill="none" stroke="var(--line)" stroke-width="9"/>
+    <circle cx="45" cy="45" r="${r}" fill="none" stroke="${color}" stroke-width="9"
+      stroke-dasharray="${c}" stroke-dashoffset="${offset}" stroke-linecap="round"
+      transform="rotate(-90 45 45)"/>
+  </svg>`;
+}
+
+// ---------------------------------------------------------------
 // Push notifications
 // ---------------------------------------------------------------
 async function enablePushNotifications() {
@@ -441,7 +814,6 @@ async function enablePushNotifications() {
   }
   const permission = await Notification.requestPermission();
   if (permission !== 'granted') return;
-
   const reg = await navigator.serviceWorker.ready;
   const sub = await reg.pushManager.subscribe({
     userVisibleOnly: true,

@@ -42,6 +42,8 @@
   <header class="topbar">
     <div class="brand">Priority</div>
     <div class="topbar-controls">
+      <button id="howto-btn" class="ghost-btn" title="How this works">?</button>
+      <button id="progress-btn" class="ghost-btn">📊 My progress</button>
       <button id="notif-btn" class="ghost-btn" title="Enable notifications">🔔</button>
       <div class="filter-toggle">
         <button data-filter="mine" class="filter-btn active">My tasks</button>
@@ -52,7 +54,10 @@
     </div>
   </header>
 
-  <div id="cap-warning" class="cap-warning hidden"></div>
+  <div class="subbar">
+    <button id="done-toggle-btn" class="done-badge-btn">✓ Done <span id="done-count">0</span></button>
+    <div id="cap-warning" class="cap-warning hidden"></div>
+  </div>
 
   <main class="matrix-wrap">
     <div class="axis axis-top"><span>← Not Urgent</span><span>Urgent →</span></div>
@@ -62,24 +67,28 @@
       <section class="quadrant q-do" data-q="do">
         <h2>Do First <small>Urgent · Important</small></h2>
         <div class="card-list" id="list-do"></div>
+        <button class="view-all-btn hidden" data-q="do">View all <span></span> →</button>
       </section>
       <section class="quadrant q-schedule" data-q="schedule">
         <h2>Schedule <small>Not Urgent · Important</small></h2>
         <div class="card-list" id="list-schedule"></div>
+        <button class="view-all-btn hidden" data-q="schedule">View all <span></span> →</button>
       </section>
       <section class="quadrant q-delegate" data-q="delegate">
         <h2>Delegate <small>Urgent · Not Important</small></h2>
         <div class="card-list" id="list-delegate"></div>
+        <button class="view-all-btn hidden" data-q="delegate">View all <span></span> →</button>
       </section>
       <section class="quadrant q-eliminate" data-q="eliminate">
         <h2>Eliminate <small>Not Urgent · Not Important</small></h2>
         <div class="card-list" id="list-eliminate"></div>
+        <button class="view-all-btn hidden" data-q="eliminate">View all <span></span> →</button>
       </section>
     </div>
   </main>
 </div>
 
-<!-- ===== Task modal ===== -->
+<!-- ===== Task modal (create / edit) ===== -->
 <div id="task-modal" class="modal hidden">
   <div class="modal-card">
     <div class="modal-head">
@@ -91,36 +100,85 @@
       <label>Title
         <input id="f-title" type="text" required maxlength="140" />
       </label>
-      <label>Description
-        <textarea id="f-desc" rows="2"></textarea>
+
+      <label class="quadrant-picker-label">Which box does this belong in?</label>
+      <div class="quadrant-picker" id="quadrant-picker">
+        <button type="button" class="qchip qchip-do" data-important="true" data-urgent="true">Important<br>&amp; Urgent</button>
+        <button type="button" class="qchip qchip-schedule" data-important="true" data-urgent="false">Important<br>Not Urgent</button>
+        <button type="button" class="qchip qchip-delegate" data-important="false" data-urgent="true">Urgent<br>Not Important</button>
+        <button type="button" class="qchip qchip-eliminate" data-important="false" data-urgent="false">Neither</button>
+      </div>
+
+      <label>Assignee
+        <select id="f-assignee"></select>
       </label>
-      <div class="form-row">
-        <label>Assignee
-          <select id="f-assignee"></select>
-        </label>
-        <label>Due date
-          <input id="f-due" type="datetime-local" />
-        </label>
-      </div>
 
-      <div class="importance-block">
-        <p class="importance-q">If this doesn't get done this week, does it hurt a client, revenue, or block someone else?</p>
-        <div class="seg-control">
-          <button type="button" class="seg-btn" data-important="true">Yes — Important</button>
-          <button type="button" class="seg-btn" data-important="false">No</button>
+      <div class="collapse-section">
+        <button type="button" class="collapse-toggle" data-target="sec-tags">
+          <span class="chev">›</span> 🏷️ Tags
+        </button>
+        <div class="collapse-body hidden" id="sec-tags">
+          <div id="tag-picker" class="tag-picker"></div>
+          <div class="add-tag-row">
+            <input type="text" id="new-tag-icon" placeholder="Icon" maxlength="4" />
+            <input type="text" id="new-tag-name" placeholder="New tag name" maxlength="30" />
+            <button type="button" id="add-tag-btn" class="ghost-btn small">+ Add tag</button>
+          </div>
         </div>
-        <p class="urgency-note">Urgency is set automatically: due within 48 hours = Urgent.</p>
       </div>
 
-      <div class="chain-block">
-        <label class="chain-toggle-row">
-          <input type="checkbox" id="f-chain-enable" />
-          Turn this into a process chain (what happens next when this is done)
-        </label>
-        <div id="chain-builder" class="hidden">
-          <p class="chain-hint">Drag to reorder. Only the top step goes live now — the rest stay queued until the one before finishes.</p>
-          <div id="chain-steps"></div>
-          <button type="button" id="chain-add-step" class="ghost-btn small">+ Add step</button>
+      <div class="collapse-section">
+        <button type="button" class="collapse-toggle" data-target="sec-due">
+          <span class="chev">›</span> 📅 Due date
+        </button>
+        <div class="collapse-body hidden" id="sec-due">
+          <input id="f-due" type="datetime-local" />
+        </div>
+      </div>
+
+      <div class="collapse-section">
+        <button type="button" class="collapse-toggle" data-target="sec-notes">
+          <span class="chev">›</span> 📝 Notes
+        </button>
+        <div class="collapse-body hidden" id="sec-notes">
+          <textarea id="f-notes" rows="3" placeholder="Details about this task…"></textarea>
+        </div>
+      </div>
+
+      <div class="collapse-section">
+        <button type="button" class="collapse-toggle" data-target="sec-attachments">
+          <span class="chev">›</span> 📎 Attachments
+        </button>
+        <div class="collapse-body hidden" id="sec-attachments">
+          <div id="attachment-rows"></div>
+          <button type="button" id="add-attachment-btn" class="ghost-btn small">+ Add attachment</button>
+        </div>
+      </div>
+
+      <div class="collapse-section">
+        <button type="button" class="collapse-toggle" data-target="sec-subtasks">
+          <span class="chev">›</span> ↳ Subtasks
+        </button>
+        <div class="collapse-body hidden" id="sec-subtasks">
+          <div id="subtask-rows"></div>
+          <button type="button" id="add-subtask-btn" class="ghost-btn small">+ Add subtask</button>
+        </div>
+      </div>
+
+      <div class="collapse-section">
+        <button type="button" class="collapse-toggle" data-target="sec-chain">
+          <span class="chev">›</span> 🔗 Process chain
+        </button>
+        <div class="collapse-body hidden" id="sec-chain">
+          <label class="chain-toggle-row">
+            <input type="checkbox" id="f-chain-enable" />
+            Turn this into a process chain (what happens next when this is done)
+          </label>
+          <div id="chain-builder" class="hidden">
+            <p class="chain-hint">Drag to reorder. Only the top step goes live now — the rest stay queued until the one before finishes.</p>
+            <div id="chain-steps"></div>
+            <button type="button" id="chain-add-step" class="ghost-btn small">+ Add step</button>
+          </div>
         </div>
       </div>
 
@@ -140,6 +198,79 @@
       <button id="detail-close" class="ghost-btn">✕</button>
     </div>
     <div id="detail-body"></div>
+  </div>
+</div>
+
+<!-- ===== Quadrant "view all" modal ===== -->
+<div id="quadrant-modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3 id="quadrant-modal-title">Quadrant</h3>
+      <button id="quadrant-modal-close" class="ghost-btn">✕</button>
+    </div>
+    <div id="quadrant-modal-body" class="card-list"></div>
+  </div>
+</div>
+
+<!-- ===== Done tasks modal ===== -->
+<div id="done-modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3>Done</h3>
+      <button id="done-modal-close" class="ghost-btn">✕</button>
+    </div>
+    <div id="done-modal-body" class="card-list"></div>
+  </div>
+</div>
+
+<!-- ===== My progress ===== -->
+<div id="progress-modal" class="modal hidden">
+  <div class="modal-card modal-wide">
+    <div class="modal-head">
+      <h3>My progress</h3>
+      <button id="progress-modal-close" class="ghost-btn">✕</button>
+    </div>
+
+    <div class="range-filter" id="range-filter">
+      <button type="button" class="range-btn active" data-range="7">7 days</button>
+      <button type="button" class="range-btn" data-range="30">30 days</button>
+      <button type="button" class="range-btn" data-range="90">90 days</button>
+      <button type="button" class="range-btn" data-range="365">12 months</button>
+      <button type="button" class="range-btn" data-range="all">All time</button>
+      <button type="button" class="range-btn" data-range="custom">Custom</button>
+    </div>
+    <div id="custom-range-inputs" class="custom-range-inputs hidden">
+      <input type="date" id="range-from" /> <span>to</span> <input type="date" id="range-to" />
+      <button type="button" id="apply-custom-range" class="ghost-btn small">Apply</button>
+    </div>
+
+    <h4 class="progress-subhead">Completion heatmap</h4>
+    <p class="progress-caption">Tasks you completed per day</p>
+    <div id="heatmap-wrap" class="heatmap-wrap"></div>
+
+    <h4 class="progress-subhead">Completion by quadrant</h4>
+    <div class="donut-grid" id="donut-grid"></div>
+  </div>
+</div>
+
+<!-- ===== How to ===== -->
+<div id="howto-modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3>How Priority works</h3>
+      <button id="howto-modal-close" class="ghost-btn">✕</button>
+    </div>
+    <div class="howto-body">
+      <p><strong>The four boxes.</strong> Every task lives in one of four quadrants based on whether it's <em>Important</em> and/or <em>Urgent</em>. Pick the box directly when you create a task — there's no auto-guessing.</p>
+      <p><strong>Moving a task.</strong> Drag a task card into a different quadrant to re-file it (desktop). On mobile, open the task and use the "Move to…" buttons.</p>
+      <p><strong>Tags.</strong> Shared across the whole team — pick from the library or add a new one with your own icon.</p>
+      <p><strong>Notes &amp; attachments.</strong> Notes are free-form details. Attachments are labelled links (specs, docs, Figma files, anything with a URL) — no file uploads, just links.</p>
+      <p><strong>Subtasks.</strong> Full mini-tasks with their own assignee and due date, nested under a parent task. They don't show up on the main dashboard — only inside their parent.</p>
+      <p><strong>Process chains.</strong> An ordered sequence of steps, possibly across different people. Only the active step is visible; finishing it activates the next one automatically.</p>
+      <p><strong>Done tasks.</strong> Completed tasks disappear from the four boxes. Tap "✓ Done" below the top bar to see them.</p>
+      <p><strong>My progress.</strong> Tracks your own completions — a heatmap of which days you got things done, and how your completions split across the four boxes.</p>
+      <p><strong>Notifications.</strong> Tap 🔔 once to allow push notifications for assignments, chain hand-offs, and due/overdue reminders — works even with the app closed.</p>
+    </div>
   </div>
 </div>
 
