@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Priority</title>
+<meta name="theme-color" content="#F7F5F1" />
+<link rel="manifest" href="manifest.json" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ===== Auth screen ===== -->
+<div id="auth-screen" class="screen">
+  <div class="auth-card">
+    <div class="brand">Priority</div>
+    <p class="auth-sub">Sign in with your work email. We'll send a one-time link — no password.</p>
+    <form id="auth-form">
+      <input id="auth-email" type="email" placeholder="you@company.com" required />
+      <button type="submit">Send sign-in link</button>
+    </form>
+    <p id="auth-status" class="auth-status"></p>
+
+    <div id="name-step" class="hidden">
+      <p class="auth-sub">What should teammates see you as?</p>
+      <form id="name-form">
+        <input id="name-input" type="text" placeholder="Your name" required />
+        <button type="submit">Continue</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- ===== App shell ===== -->
+<div id="app-screen" class="screen hidden">
+  <header class="topbar">
+    <div class="brand">Priority</div>
+    <div class="topbar-controls">
+      <button id="notif-btn" class="ghost-btn" title="Enable notifications">🔔</button>
+      <div class="filter-toggle">
+        <button data-filter="mine" class="filter-btn active">My tasks</button>
+        <button data-filter="all" class="filter-btn">Everyone</button>
+      </div>
+      <button id="new-task-btn" class="primary-btn">+ New task</button>
+      <button id="signout-btn" class="ghost-btn">Sign out</button>
+    </div>
+  </header>
+
+  <div id="cap-warning" class="cap-warning hidden"></div>
+
+  <main class="matrix-wrap">
+    <div class="axis axis-top"><span>← Not Urgent</span><span>Urgent →</span></div>
+    <div class="axis axis-left"><span>Important →</span><span>← Not Important</span></div>
+
+    <div class="matrix">
+      <section class="quadrant q-do" data-q="do">
+        <h2>Do First <small>Urgent · Important</small></h2>
+        <div class="card-list" id="list-do"></div>
+      </section>
+      <section class="quadrant q-schedule" data-q="schedule">
+        <h2>Schedule <small>Not Urgent · Important</small></h2>
+        <div class="card-list" id="list-schedule"></div>
+      </section>
+      <section class="quadrant q-delegate" data-q="delegate">
+        <h2>Delegate <small>Urgent · Not Important</small></h2>
+        <div class="card-list" id="list-delegate"></div>
+      </section>
+      <section class="quadrant q-eliminate" data-q="eliminate">
+        <h2>Eliminate <small>Not Urgent · Not Important</small></h2>
+        <div class="card-list" id="list-eliminate"></div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<!-- ===== Task modal ===== -->
+<div id="task-modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3 id="modal-title">New task</h3>
+      <button id="modal-close" class="ghost-btn">✕</button>
+    </div>
+
+    <form id="task-form">
+      <label>Title
+        <input id="f-title" type="text" required maxlength="140" />
+      </label>
+      <label>Description
+        <textarea id="f-desc" rows="2"></textarea>
+      </label>
+      <div class="form-row">
+        <label>Assignee
+          <select id="f-assignee"></select>
+        </label>
+        <label>Due date
+          <input id="f-due" type="datetime-local" />
+        </label>
+      </div>
+
+      <div class="importance-block">
+        <p class="importance-q">If this doesn't get done this week, does it hurt a client, revenue, or block someone else?</p>
+        <div class="seg-control">
+          <button type="button" class="seg-btn" data-important="true">Yes — Important</button>
+          <button type="button" class="seg-btn" data-important="false">No</button>
+        </div>
+        <p class="urgency-note">Urgency is set automatically: due within 48 hours = Urgent.</p>
+      </div>
+
+      <div class="chain-block">
+        <label class="chain-toggle-row">
+          <input type="checkbox" id="f-chain-enable" />
+          Turn this into a process chain (what happens next when this is done)
+        </label>
+        <div id="chain-builder" class="hidden">
+          <p class="chain-hint">Drag to reorder. Only the top step goes live now — the rest stay queued until the one before finishes.</p>
+          <div id="chain-steps"></div>
+          <button type="button" id="chain-add-step" class="ghost-btn small">+ Add step</button>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" id="task-delete-btn" class="danger-btn hidden">Delete</button>
+        <button type="submit" class="primary-btn">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ===== Task detail / chain manager modal ===== -->
+<div id="detail-modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3 id="detail-title">Task</h3>
+      <button id="detail-close" class="ghost-btn">✕</button>
+    </div>
+    <div id="detail-body"></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

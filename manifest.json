@@ -1,0 +1,15 @@
+{
+  "name": "Priority — Team Tasks",
+  "short_name": "Priority",
+  "description": "Team task manager sorted by urgency and importance",
+  "start_url": "/index.html",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#F7F5F1",
+  "theme_color": "#F7F5F1",
+  "orientation": "portrait-primary",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
